@@ -44,11 +44,19 @@ from animatediff.utils.util import save_videos_grid, zero_rank_print
 def init_dist(launcher="slurm", backend='nccl', port=29500, **kwargs):
     """Initializes distributed environment."""
     if launcher == 'pytorch':
+
+        os.environ['MASTER_ADDR'] = 'localhost'
+        os.environ['WORLD_SIZE'] = '1'
+        os.environ['RANK'] = '0'
+        os.environ['MASTER_PORT'] = str(port)
+
         rank = int(os.environ['RANK'])
         num_gpus = torch.cuda.device_count()
-        local_rank = rank % num_gpus
+        print(f"{num_gpus} GPUs found")
+        # local_rank = rank % num_gpus
+        local_rank = 0
         torch.cuda.set_device(local_rank)
-        dist.init_process_group(backend=backend, **kwargs)
+        dist.init_process_group(backend='gloo', **kwargs)
         
     elif launcher == 'slurm':
         proc_id = int(os.environ['SLURM_PROCID'])
@@ -105,7 +113,8 @@ def main(
     lr_scheduler: str = "constant",
 
     trainable_modules: Tuple[str] = (None, ),
-    num_workers: int = 32,
+    # num_workers: int = 32,
+    num_workers: int = 8,
     train_batch_size: int = 1,
     adam_beta1: float = 0.9,
     adam_beta2: float = 0.999,
@@ -137,8 +146,8 @@ def main(
     # Logging folder
     folder_name = "debug" if is_debug else name + datetime.datetime.now().strftime("-%Y-%m-%dT%H-%M-%S")
     output_dir = os.path.join(output_dir, folder_name)
-    if is_debug and os.path.exists(output_dir):
-        os.system(f"rm -rf {output_dir}")
+    # if is_debug and os.path.exists(output_dir):
+        # os.system(f"rm -rf {output_dir}")
 
     *_, config = inspect.getargvalues(inspect.currentframe())
 
@@ -146,7 +155,7 @@ def main(
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
-        level=logging.INFO,
+        level=logging.DEBUG,
     )
 
     if is_main_process and (not is_debug) and use_wandb:
@@ -209,7 +218,7 @@ def main(
     if is_main_process:
         zero_rank_print(f"trainable params number: {len(trainable_params)}")
         zero_rank_print(f"trainable params scale: {sum(p.numel() for p in trainable_params) / 1e6:.3f} M")
-
+    
     # Enable xformers
     if enable_xformers_memory_efficient_attention:
         if is_xformers_available():
@@ -485,6 +494,7 @@ if __name__ == "__main__":
     parser.add_argument("--config",   type=str, required=True)
     parser.add_argument("--launcher", type=str, choices=["pytorch", "slurm"], default="pytorch")
     parser.add_argument("--wandb",    action="store_true")
+    # parser.add_argument("--pretrained_model_path", type=str, default="models/StableDiffusion/v1-5-pruned.safetensors",)
     args = parser.parse_args()
 
     name   = Path(args.config).stem

@@ -1,7 +1,7 @@
 image_finetune: false
 
 output_dir: "outputs"
-pretrained_model_path: "models/StableDiffusion/stable-diffusion-v1-5"
+pretrained_model_path: "models/StableDiffusion"
 
 unet_additional_kwargs:
   use_motion_module              : true
@@ -28,8 +28,8 @@ noise_scheduler_kwargs:
   clip_sample:         false
 
 train_data:
-  csv_path:        "/mnt/petrelfs/guoyuwei/projects/datasets/webvid/results_2M_val.csv"
-  video_folder:    "/mnt/petrelfs/guoyuwei/projects/datasets/webvid/2M_val"
+  csv_path:        "/dev/AnimateDiff/data/test.csv"
+  video_folder:    "/dev/AnimateDiff/data/videos"
   sample_size:     256
   sample_stride:   4
   sample_n_frames: 16
@@ -49,7 +49,7 @@ trainable_modules:
 unet_checkpoint_path: ""
 
 learning_rate:    1.e-4
-train_batch_size: 4
+train_batch_size: 2
 
 max_train_epoch:      -1
 max_train_steps:      100
@@ -57,7 +57,7 @@ checkpointing_epochs: -1
 checkpointing_steps:  60
 
 validation_steps:       5000
-validation_steps_tuple: [2, 50]
+# validation_steps_tuple: [2, 50]
 
 global_seed: 42
 mixed_precision_training: true

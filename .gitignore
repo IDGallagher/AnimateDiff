@@ -3,6 +3,7 @@ wandb/
 debugs/
 outputs/
 samples/
+data/
 __pycache__/
 ossutil_output/
 .ossutil_checkpoint/
