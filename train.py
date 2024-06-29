@@ -1,5 +1,6 @@
 import os
 import math
+import torch.distributed
 import wandb
 import random
 import logging
@@ -7,6 +8,7 @@ import inspect
 import argparse
 import datetime
 import subprocess
+import sys
 
 from pathlib import Path
 from tqdm.auto import tqdm
@@ -19,9 +21,10 @@ import torch
 import torchvision
 import torch.nn.functional as F
 import torch.distributed as dist
+
 from torch.optim.swa_utils import AveragedModel
 from torch.utils.data.distributed import DistributedSampler
-from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.nn.parallel import DistributedDataParallel
 
 import diffusers
 from diffusers import AutoencoderKL, DDIMScheduler
@@ -34,12 +37,26 @@ from diffusers.utils.import_utils import is_xformers_available
 import transformers
 from transformers import CLIPTextModel, CLIPTokenizer
 
-from animatediff.data.dataset import WebVid10M
+from animatediff.data.dataset import WebVid10M, make_dataset, make_dataloader
 from animatediff.models.unet import UNet3DConditionModel
 from animatediff.pipelines.pipeline_animation import AnimationPipeline
 from animatediff.utils.util import save_videos_grid, zero_rank_print
 
+# helpers
 
+import time
+
+def enumerate_report(seq, delta, growth=1.0):
+    last = 0
+    count = 0
+    for count, item in enumerate(seq):
+        now = time.time()
+        if now - last > delta:
+            last = now
+            yield count, item, True
+        else:
+            yield count, item, False
+        delta *= growth
 
 def init_dist(launcher="slurm", backend='nccl', port=29500, **kwargs):
     """Initializes distributed environment."""
@@ -235,34 +252,52 @@ def main(
     text_encoder.to(local_rank)
 
     # Get the training dataset
-    train_dataset = WebVid10M(**train_data, is_image=image_finetune)
-    distributed_sampler = DistributedSampler(
-        train_dataset,
-        num_replicas=num_processes,
-        rank=global_rank,
-        shuffle=True,
-        seed=global_seed,
-    )
+    # train_dataset = WebVid10M(**train_data, is_image=image_finetune)
+    # distributed_sampler = DistributedSampler(
+    #     train_dataset,
+    #     num_replicas=num_processes,
+    #     rank=global_rank,
+    #     shuffle=True,
+    #     seed=global_seed,
+    # )
 
-    # DataLoaders creation:
-    train_dataloader = torch.utils.data.DataLoader(
-        train_dataset,
-        batch_size=train_batch_size,
-        shuffle=False,
-        sampler=distributed_sampler,
-        num_workers=num_workers,
-        pin_memory=True,
-        drop_last=True,
-    )
+    # # DataLoaders creation:
+    # train_dataloader = torch.utils.data.DataLoader(
+    #     train_dataset,
+    #     batch_size=train_batch_size,
+    #     shuffle=False,
+    #     sampler=distributed_sampler,
+    #     num_workers=num_workers,
+    #     pin_memory=True,
+    #     drop_last=True,
+    # )
+
+    # train_dataset = wds.DataPipeline(
+    #     WebVid10MWebDataset(**train_data, is_image=image_finetune),
+    #     wds.shuffle(1000),
+    #     wds.split_by_node(num_processes, global_rank),
+    #     wds.batched(train_batch_size)
+    # )
+
+    # train_dataloader = wds.WebLoader(
+    #     train_dataset,
+    #     num_workers=num_workers,
+    #     batch_size=None,
+    #     pin_memory=True,
+    #     length_hint=20
+    # )
+
+    train_dataset = make_dataset(**train_data)
+    train_dataloader = make_dataloader(train_dataset, batch_size=train_batch_size)
 
     # Get the training iteration
     if max_train_steps == -1:
         assert max_train_epoch != -1
-        max_train_steps = max_train_epoch * len(train_dataloader)
+        max_train_steps = max_train_epoch * len(train_dataset)
         
     if checkpointing_steps == -1:
         assert checkpointing_epochs != -1
-        checkpointing_steps = checkpointing_epochs * len(train_dataloader)
+        checkpointing_steps = checkpointing_epochs * len(train_dataset)
 
     if scale_lr:
         learning_rate = (learning_rate * gradient_accumulation_steps * train_batch_size * num_processes)
@@ -287,12 +322,12 @@ def main(
         )
     validation_pipeline.enable_vae_slicing()
 
-    # DDP warpper
+    # DistributedDataParallel warpper
     unet.to(local_rank)
-    unet = DDP(unet, device_ids=[local_rank], output_device=local_rank)
+    unet = DistributedDataParallel(unet, device_ids=[local_rank], output_device=local_rank)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
-    num_update_steps_per_epoch = math.ceil(len(train_dataloader) / gradient_accumulation_steps)
+    num_update_steps_per_epoch = math.ceil(len(train_dataset) / gradient_accumulation_steps)
     # Afterwards we recalculate our number of training epochs
     num_train_epochs = math.ceil(max_train_steps / num_update_steps_per_epoch)
 
@@ -321,7 +356,7 @@ def main(
         train_dataloader.sampler.set_epoch(epoch)
         unet.train()
         
-        for step, batch in enumerate(train_dataloader):
+        for step, batch, verbose in enumerate_report(train_dataloader, 5):
             if cfg_random_null_text:
                 batch['text'] = [name if random.random() > cfg_random_null_text_ratio else "" for name in batch['text']]
                 
@@ -417,14 +452,14 @@ def main(
                 wandb.log({"train_loss": loss.item()}, step=global_step)
                 
             # Save checkpoint
-            if is_main_process and (global_step % checkpointing_steps == 0 or step == len(train_dataloader) - 1):
+            if is_main_process and (global_step % checkpointing_steps == 0 or step == len(train_dataset) - 1):
                 save_path = os.path.join(output_dir, f"checkpoints")
                 state_dict = {
                     "epoch": epoch,
                     "global_step": global_step,
                     "state_dict": unet.state_dict(),
                 }
-                if step == len(train_dataloader) - 1:
+                if step == len(train_dataset) - 1:
                     torch.save(state_dict, os.path.join(save_path, f"checkpoint-epoch-{epoch+1}.ckpt"))
                 else:
                     torch.save(state_dict, os.path.join(save_path, f"checkpoint.ckpt"))

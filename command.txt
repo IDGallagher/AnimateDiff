@@ -1,4 +1,0 @@
-
-conda activate animatediff
-
-python train.py --wandb --config "C:\dev\AnimateDiff\configs\training\v1\training.yaml"

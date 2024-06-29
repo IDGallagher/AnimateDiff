@@ -1,14 +1,64 @@
 import os, io, csv, math, random
+import sys
 import numpy as np
 from einops import rearrange
+from functools import partial
 from decord import VideoReader
+from torch.utils.data import DataLoader
 
 import torch
 import torchvision.transforms as transforms
 from torch.utils.data.dataset import Dataset
 from animatediff.utils.util import zero_rank_print
 
+sys.path.append("./webdataset/")
+import webdataset as wds
+import wids
 
+def make_sample(sample, sample_size=256, sample_stride=4, sample_n_frames=16, is_image=False, **kwargs):
+    video = sample[".mp4"]
+    caption = sample[".txt"]
+
+    print(f"sample size {sample_size}")
+    
+    video_reader = VideoReader(video)
+    video_length = len(video_reader)
+    
+    if not is_image:
+        clip_length = min(video_length, (sample_n_frames - 1) * sample_stride + 1)
+        start_idx   = random.randint(0, video_length - clip_length)
+        batch_index = np.linspace(start_idx, start_idx + clip_length - 1, sample_n_frames, dtype=int)
+    else:
+        batch_index = [random.randint(0, video_length - 1)]
+
+    pixel_values = torch.from_numpy(video_reader.get_batch(batch_index).asnumpy()).permute(0, 3, 1, 2).contiguous()
+    pixel_values = pixel_values / 255.
+    del video_reader
+
+    if is_image:
+        pixel_values = pixel_values[0]
+
+    sample_size = tuple(sample_size) if not isinstance(sample_size, int) else (sample_size, sample_size)
+    pixel_transforms = transforms.Compose([
+        transforms.RandomHorizontalFlip(),
+        transforms.Resize(sample_size[0]),
+        transforms.CenterCrop(sample_size),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True),
+    ])
+
+    return dict(pixel_values=pixel_transforms(pixel_values), text=caption)
+
+def make_dataset(shards, url_pattern, cache_dir="./tmp", **kwargs):
+    trainset = wids.ShardListDataset(shards, cache_dir=cache_dir, keep=True)
+    trainset = trainset.add_transform(partial(make_sample, **kwargs))
+    return trainset
+
+def make_dataloader(dataset, batch_size=1):
+    sampler = wids.DistributedChunkedSampler(dataset, chunksize=1000, shuffle=True)
+    dataloader = DataLoader(
+        dataset, batch_size=batch_size, sampler=sampler, num_workers=2
+    )
+    return dataloader
 
 class WebVid10M(Dataset):
     def __init__(
@@ -90,22 +140,3 @@ class WebVid10M(Dataset):
         return sample
 
 
-
-if __name__ == "__main__":
-    from animatediff.utils.util import save_videos_grid
-
-    dataset = WebVid10M(
-        csv_path="/mnt/petrelfs/guoyuwei/projects/datasets/webvid/results_2M_val.csv",
-        video_folder="/mnt/petrelfs/guoyuwei/projects/datasets/webvid/2M_val",
-        sample_size=256,
-        sample_stride=4, sample_n_frames=16,
-        is_image=True,
-    )
-    import pdb
-    pdb.set_trace()
-    
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=4, num_workers=16,)
-    for idx, batch in enumerate(dataloader):
-        print(batch["pixel_values"].shape, len(batch["text"]))
-        # for i in range(batch["pixel_values"].shape[0]):
-        #     save_videos_grid(batch["pixel_values"][i:i+1].permute(0,2,1,3,4), os.path.join(".", f"{idx}-{i}.mp4"), rescale=True)
