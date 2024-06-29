@@ -48,7 +48,7 @@ def make_sample(sample, sample_size=256, sample_stride=4, sample_n_frames=16, is
 
     return dict(pixel_values=pixel_transforms(pixel_values), text=caption)
 
-def make_dataset(shards, url_pattern, cache_dir="./tmp", **kwargs):
+def make_dataset(shards, cache_dir="./tmp", **kwargs):
     trainset = wids.ShardListDataset(shards, cache_dir=cache_dir, keep=True)
     trainset = trainset.add_transform(partial(make_sample, **kwargs))
     return trainset
