@@ -56,7 +56,7 @@ def make_dataset(shards, cache_dir="./tmp", **kwargs):
 def make_dataloader(dataset, batch_size=1):
     sampler = wids.DistributedChunkedSampler(dataset, chunksize=1000, shuffle=True)
     dataloader = DataLoader(
-        dataset, batch_size=batch_size, sampler=sampler, num_workers=2
+        dataset, batch_size=batch_size, sampler=sampler, num_workers=1
     )
     return dataloader
 

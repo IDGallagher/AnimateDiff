@@ -131,7 +131,7 @@ def main(
 
     trainable_modules: Tuple[str] = (None, ),
     # num_workers: int = 32,
-    num_workers: int = 8,
+    num_workers: int = 1,
     train_batch_size: int = 1,
     adam_beta1: float = 0.9,
     adam_beta2: float = 0.999,
